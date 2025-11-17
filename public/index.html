@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>歯科医院 日計表入力</title>
+    <!-- html2pdf.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <style>
         @media print { 
             @page { 
@@ -454,9 +456,33 @@
         .btn-export {
             background-color: #cccccc;
         }
-        
+
         .btn-export:hover {
             background-color: #aaaaaa;
+        }
+
+        .btn-save-pdf {
+            background-color: #90EE90;
+            border-color: #00aa00;
+        }
+
+        .btn-save-pdf:hover:not(:disabled) {
+            background-color: #7CCD7C;
+        }
+
+        .btn-save-pdf:disabled {
+            background-color: #d0d0d0;
+            border-color: #999;
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .btn-notion-settings {
+            background-color: #f0f0f0;
+        }
+
+        .btn-notion-settings:hover {
+            background-color: #d8d8d8;
         }
         
         .modal {
@@ -478,6 +504,48 @@
             padding: 20px;
             border-radius: 5px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-content h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+
+        .notion-form-group {
+            margin-bottom: 15px;
+        }
+
+        .notion-form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .notion-form-group input,
+        .notion-form-group textarea {
+            width: 100%;
+            padding: 8px;
+            font-size: 12px;
+            font-family: monospace;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            box-sizing: border-box;
+        }
+
+        .notion-form-group textarea {
+            resize: vertical;
+            min-height: 60px;
+        }
+
+        .notion-help-text {
+            font-size: 10px;
+            color: #666;
+            margin-top: 3px;
         }
         
         .modal-buttons {
@@ -663,6 +731,27 @@
                 <div class="modal-buttons">
                     <button class="btn-yes" onclick="confirmClear()">はい</button>
                     <button class="btn-no" onclick="cancelClear()">いいえ</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Notion設定モーダル -->
+        <div class="modal hidden no-print" id="notionSettingsModal">
+            <div class="modal-content">
+                <h3>Notion 連携設定</h3>
+                <div class="notion-form-group">
+                    <label for="notionApiKey">Notion API Key (Integration Token)</label>
+                    <input type="password" id="notionApiKey" placeholder="secret_xxxxxxxxxxxxx">
+                    <div class="notion-help-text">Notionインテグレーションのシークレットトークン</div>
+                </div>
+                <div class="notion-form-group">
+                    <label for="notionDatabaseId">Notion Database ID</label>
+                    <input type="text" id="notionDatabaseId" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+                    <div class="notion-help-text">保存先データベースのID（URLから取得）</div>
+                </div>
+                <div class="modal-buttons">
+                    <button class="btn-yes" onclick="saveNotionSettings()">保存</button>
+                    <button class="btn-no" onclick="closeNotionSettings()">キャンセル</button>
                 </div>
             </div>
         </div>
@@ -966,6 +1055,8 @@
             <button class="btn btn-clear" onclick="clearAll()">全クリア</button>
             <button class="btn btn-print" onclick="printReport()">印刷</button>
             <button class="btn btn-export" onclick="exportData()">データエクスポート</button>
+            <button class="btn btn-save-pdf" id="savePdfBtn" onclick="savePdfToNotion()" disabled>PDFで保存してNotionに送信</button>
+            <button class="btn btn-notion-settings" onclick="openNotionSettings()">⚙️ Notion設定</button>
         </div>
     </div>
 
@@ -1460,14 +1551,19 @@
         // 残高チェック機能
         function updateBalanceCheck(physicalBalance, calculatedBalance) {
             const balanceCheck = document.getElementById('balanceCheck');
+            const savePdfBtn = document.getElementById('savePdfBtn');
             const difference = physicalBalance - calculatedBalance;
-            
+
             if (difference === 0) {
                 balanceCheck.textContent = `残高チェック: ✓ 一致しています (${physicalBalance.toLocaleString()}円)`;
                 balanceCheck.className = 'balance-check match no-print';
+                // 残高が一致した場合、PDF保存ボタンを有効化
+                savePdfBtn.disabled = false;
             } else {
                 balanceCheck.textContent = `残高チェック: ✗ 差額 ${difference.toLocaleString()}円 (実物: ${physicalBalance.toLocaleString()}円 / 計算: ${calculatedBalance.toLocaleString()}円)`;
                 balanceCheck.className = 'balance-check no-print';
+                // 残高が一致しない場合、PDF保存ボタンを無効化
+                savePdfBtn.disabled = true;
             }
         }
 
@@ -1690,6 +1786,135 @@
             setTimeout(() => {
                 messageBox.classList.add('hidden');
             }, 3000);
+        }
+
+        // Notion設定を開く
+        function openNotionSettings() {
+            const modal = document.getElementById('notionSettingsModal');
+
+            // 既存の設定を読み込む
+            const apiKey = localStorage.getItem('notionApiKey') || '';
+            const databaseId = localStorage.getItem('notionDatabaseId') || '';
+
+            document.getElementById('notionApiKey').value = apiKey;
+            document.getElementById('notionDatabaseId').value = databaseId;
+
+            modal.classList.remove('hidden');
+            logDebug('Notion設定モーダルを開きました');
+        }
+
+        // Notion設定を保存
+        function saveNotionSettings() {
+            const apiKey = document.getElementById('notionApiKey').value.trim();
+            const databaseId = document.getElementById('notionDatabaseId').value.trim();
+
+            if (!apiKey || !databaseId) {
+                showMessage('⚠️ APIキーとデータベースIDを両方入力してください');
+                return;
+            }
+
+            localStorage.setItem('notionApiKey', apiKey);
+            localStorage.setItem('notionDatabaseId', databaseId);
+
+            document.getElementById('notionSettingsModal').classList.add('hidden');
+            showMessage('✅ Notion設定を保存しました');
+            logDebug('Notion設定を保存しました');
+        }
+
+        // Notion設定を閉じる
+        function closeNotionSettings() {
+            document.getElementById('notionSettingsModal').classList.add('hidden');
+            logDebug('Notion設定モーダルを閉じました');
+        }
+
+        // PDFを生成してNotionに保存
+        async function savePdfToNotion() {
+            const apiKey = localStorage.getItem('notionApiKey');
+            const databaseId = localStorage.getItem('notionDatabaseId');
+
+            // Notion設定のチェック
+            if (!apiKey || !databaseId) {
+                showMessage('⚠️ 先にNotion設定を完了してください');
+                openNotionSettings();
+                return;
+            }
+
+            const savePdfBtn = document.getElementById('savePdfBtn');
+            savePdfBtn.disabled = true;
+            savePdfBtn.textContent = 'PDF生成中...';
+
+            logDebug('PDF生成開始');
+
+            try {
+                // PDF生成のオプション
+                const opt = {
+                    margin: [0.3, 0.3, 0.3, 0.3],
+                    filename: `日計表_${document.getElementById('reportDate').value}.pdf`,
+                    image: { type: 'jpeg', quality: 0.98 },
+                    html2canvas: {
+                        scale: 2,
+                        useCORS: true,
+                        logging: false,
+                        backgroundColor: '#ffffff'
+                    },
+                    jsPDF: {
+                        unit: 'cm',
+                        format: 'b5',
+                        orientation: 'landscape',
+                        compress: true
+                    },
+                    pagebreak: { mode: 'avoid-all' }
+                };
+
+                // PDFを生成
+                const element = document.querySelector('.app-container');
+                const pdfBlob = await html2pdf().set(opt).from(element).output('blob');
+
+                logDebug(`PDF生成完了: ${(pdfBlob.size / 1024).toFixed(1)}KB`);
+
+                savePdfBtn.textContent = 'Notionに送信中...';
+
+                // NotionにPDFを送信
+                const formData = new FormData();
+                formData.append('pdf', pdfBlob, opt.filename);
+                formData.append('apiKey', apiKey);
+                formData.append('databaseId', databaseId);
+                formData.append('date', document.getElementById('reportDate').value);
+                formData.append('totalBalance', document.getElementById('totalBalance').textContent);
+                formData.append('finalBalance', document.getElementById('finalBalance').textContent);
+
+                logDebug('Notion APIへ送信開始');
+
+                const response = await fetch('/api/notion-save', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || `HTTP ${response.status}`);
+                }
+
+                if (result.success) {
+                    showMessage('✅ PDFをNotionに保存しました！');
+                    logDebug('Notion保存成功');
+                    if (result.pageUrl) {
+                        logDebug(`NotionページURL: ${result.pageUrl}`);
+                    }
+                } else {
+                    throw new Error('Notionへの保存に失敗しました');
+                }
+
+            } catch (error) {
+                console.error('PDF/Notion save error:', error);
+                logDebug(`エラー: ${error.message}`);
+                showMessage(`❌ エラー: ${error.message}`);
+            } finally {
+                savePdfBtn.disabled = false;
+                savePdfBtn.textContent = 'PDFで保存してNotionに送信';
+                logDebug('PDF保存処理完了');
+            }
         }
     </script>
 </body>
