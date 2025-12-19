@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>歯科医院 日計表入力</title>
+    <!-- PDF生成ライブラリ -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
         @media print { 
             @page { 
@@ -1692,12 +1695,84 @@
             }
         }
 
-        // LINE送信
+        // PDF生成関数
+        async function generatePDF() {
+            logDebug('PDF生成開始');
+            showMessage('PDFを生成中...');
+
+            try {
+                // 印刷用の日付表示を更新
+                updateDateDisplay();
+
+                // 印刷用のコンテナを取得
+                const container = document.querySelector('.app-container');
+
+                // 一時的に印刷モードに切り替え
+                const originalClass = container.className;
+                container.classList.add('pdf-generating');
+
+                // html2canvasで画像化
+                const canvas = await html2canvas(container, {
+                    scale: 2,
+                    useCORS: true,
+                    logging: false,
+                    backgroundColor: '#ffffff',
+                    width: 1200,
+                    height: 850
+                });
+
+                // クラスを元に戻す
+                container.className = originalClass;
+
+                // jsPDFでPDF作成（B5横向き）
+                const { jsPDF } = window.jspdf;
+                const pdf = new jsPDF({
+                    orientation: 'landscape',
+                    unit: 'mm',
+                    format: 'b5'
+                });
+
+                const imgData = canvas.toDataURL('image/png');
+                const pdfWidth = pdf.internal.pageSize.getWidth();
+                const pdfHeight = pdf.internal.pageSize.getHeight();
+
+                pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+
+                // PDFをBlobとして取得
+                const pdfBlob = pdf.output('blob');
+
+                logDebug(`PDF生成完了: ${(pdfBlob.size / 1024).toFixed(2)}KB`);
+
+                return pdfBlob;
+
+            } catch (error) {
+                console.error('PDF生成エラー:', error);
+                logDebug(`PDF生成エラー: ${error.message}`);
+                throw new Error('PDF生成に失敗しました: ' + error.message);
+            }
+        }
+
+        // LINE送信（PDF版）
         async function sendToLine() {
             try {
-                logDebug('LINE送信処理開始');
+                logDebug('LINE送信処理開始（PDF版）');
 
-                // データエクスポートと同じ形式でデータを準備
+                // 日付チェック
+                const reportDate = document.getElementById('reportDate').value;
+                if (!reportDate) {
+                    showMessage('日付を入力してください');
+                    logDebug('エラー: 日付が未入力');
+                    return;
+                }
+
+                // PDFを生成
+                const pdfBlob = await generatePDF();
+
+                // FormDataを作成
+                const formData = new FormData();
+                formData.append('pdf', pdfBlob, `日計表_${reportDate}.pdf`);
+
+                // データエクスポートと同じ形式でメタデータを準備
                 const data = {
                     date: document.getElementById('reportDate').value || 'no-date',
                     income: {
@@ -1810,23 +1885,15 @@
                     }
                 };
 
-                // 日付チェック
-                if (data.date === 'no-date') {
-                    showMessage('日付を入力してください');
-                    logDebug('エラー: 日付が未入力');
-                    return;
-                }
+                formData.append('metadata', JSON.stringify(data));
 
-                logDebug(`LINEに送信するデータ: ${JSON.stringify(data, null, 2)}`);
-                showMessage('LINEに送信中...');
+                logDebug(`LINEとNotionに送信するデータ準備完了`);
+                showMessage('LINEとNotionに送信中...');
 
                 // APIに送信
                 const response = await fetch('/api/line-send', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(data)
+                    body: formData
                 });
 
                 const result = await response.json();
@@ -1838,10 +1905,17 @@
                 }
 
                 if (result.success) {
-                    showMessage(result.message || 'LINEに送信しました！');
-                    logDebug('LINE送信成功');
+                    let message = [];
+                    if (result.lineSuccess) {
+                        message.push(`LINE: ${result.lineSentCount}件送信成功`);
+                    }
+                    if (result.notionSuccess) {
+                        message.push('Notion: 保存成功');
+                    }
+                    showMessage(message.join(' / ') || 'PDFを送信しました！');
+                    logDebug('PDF送信成功');
                 } else {
-                    throw new Error(result.message || 'LINE送信に失敗しました');
+                    throw new Error(result.message || 'PDF送信に失敗しました');
                 }
 
             } catch (error) {

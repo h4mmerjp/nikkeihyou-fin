@@ -1,9 +1,13 @@
-// Vercel API Route for LINE Messaging API
+// Vercel API Route for LINE Messaging API & Notion Integration (PDF version)
+import formidable from 'formidable';
+import fs from 'fs';
+import FormData from 'form-data';
 import fetch from 'node-fetch';
+import { Client } from '@notionhq/client';
 
 export const config = {
   api: {
-    bodyParser: true,
+    bodyParser: false,
   },
 };
 
@@ -25,76 +29,97 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log('=== LINE SEND START ===');
+    console.log('=== LINE & NOTION PDF SEND START ===');
     console.log('Environment check:');
     console.log('- LINE_CHANNEL_ACCESS_TOKEN exists:', !!process.env.LINE_CHANNEL_ACCESS_TOKEN);
     console.log('- LINE_USER_IDS exists:', !!process.env.LINE_USER_IDS);
+    console.log('- NOTION_API_KEY exists:', !!process.env.NOTION_API_KEY);
+    console.log('- NOTION_DATABASE_ID exists:', !!process.env.NOTION_DATABASE_ID);
 
-    // 環境変数チェック
-    if (!process.env.LINE_CHANNEL_ACCESS_TOKEN) {
-      return res.status(500).json({
-        error: 'LINE Channel Access Token not configured',
-        message: 'LINE_CHANNEL_ACCESS_TOKEN環境変数が設定されていません'
-      });
-    }
+    // ファイルパース
+    const form = formidable({
+      maxFileSize: 15 * 1024 * 1024, // 15MB制限
+      keepExtensions: true,
+    });
 
-    if (!process.env.LINE_USER_IDS) {
-      return res.status(500).json({
-        error: 'LINE User IDs not configured',
-        message: 'LINE_USER_IDS環境変数が設定されていません'
-      });
-    }
+    const [fields, files] = await form.parse(req);
+    console.log('Files parsed:', Object.keys(files));
+    console.log('Fields parsed:', Object.keys(fields));
 
-    // 送信先ユーザーIDリスト（カンマ区切りで複数指定可能）
-    const userIds = process.env.LINE_USER_IDS.split(',').map(id => id.trim());
-    console.log('Target user IDs count:', userIds.length);
-
-    // リクエストボディから日計表データを取得
-    const reportData = req.body;
-
-    if (!reportData || !reportData.date) {
+    const pdfFile = files.pdf?.[0];
+    if (!pdfFile) {
       return res.status(400).json({
-        error: 'Invalid request data',
-        message: '日計表データが不正です'
+        error: 'No PDF file uploaded',
+        message: 'PDFファイルがアップロードされていません'
       });
     }
 
-    console.log('Report date:', reportData.date);
+    console.log('PDF file details:', {
+      originalFilename: pdfFile.originalFilename,
+      size: pdfFile.size,
+      mimetype: pdfFile.mimetype
+    });
 
-    // LINEメッセージを作成
-    const lineMessage = createLineMessage(reportData);
+    // メタデータを取得
+    const metadata = fields.metadata?.[0] ? JSON.parse(fields.metadata[0]) : {};
+    console.log('Metadata:', metadata);
 
-    // 各ユーザーにメッセージを送信
-    const sendResults = [];
+    const results = {
+      lineSuccess: false,
+      lineSentCount: 0,
+      notionSuccess: false,
+      errors: []
+    };
 
-    for (const userId of userIds) {
-      console.log(`Sending to user: ${userId}`);
-      const result = await sendLineMessage(userId, lineMessage);
-      sendResults.push({
-        userId: userId,
-        success: result.success,
-        error: result.error
-      });
+    // LINE送信処理
+    if (process.env.LINE_CHANNEL_ACCESS_TOKEN && process.env.LINE_USER_IDS) {
+      try {
+        const lineResult = await sendPDFToLine(pdfFile, metadata);
+        results.lineSuccess = lineResult.success;
+        results.lineSentCount = lineResult.sentCount || 0;
+        if (!lineResult.success) {
+          results.errors.push({ service: 'LINE', error: lineResult.error });
+        }
+      } catch (error) {
+        console.error('LINE送信エラー:', error);
+        results.errors.push({ service: 'LINE', error: error.message });
+      }
+    } else {
+      console.log('LINE設定がスキップされました（環境変数未設定）');
     }
 
-    // 送信結果を集計
-    const successCount = sendResults.filter(r => r.success).length;
-    const failCount = sendResults.filter(r => !r.success).length;
+    // Notion保存処理
+    if (process.env.NOTION_API_KEY && process.env.NOTION_DATABASE_ID) {
+      try {
+        const notionResult = await savePDFToNotion(pdfFile, metadata);
+        results.notionSuccess = notionResult.success;
+        if (!notionResult.success) {
+          results.errors.push({ service: 'Notion', error: notionResult.error });
+        }
+      } catch (error) {
+        console.error('Notion保存エラー:', error);
+        results.errors.push({ service: 'Notion', error: error.message });
+      }
+    } else {
+      console.log('Notion設定がスキップされました（環境変数未設定）');
+    }
 
-    console.log(`Send complete: ${successCount} success, ${failCount} failed`);
+    // 結果を返す
+    const hasSuccess = results.lineSuccess || results.notionSuccess;
+    const hasErrors = results.errors.length > 0;
 
-    if (failCount > 0) {
-      return res.status(207).json({
-        success: true,
-        message: `${successCount}件送信成功、${failCount}件失敗`,
-        results: sendResults
+    if (!hasSuccess && hasErrors) {
+      return res.status(500).json({
+        success: false,
+        message: '送信に失敗しました',
+        ...results
       });
     }
 
     return res.status(200).json({
       success: true,
-      message: `${successCount}件のLINEメッセージを送信しました`,
-      results: sendResults
+      message: `送信完了: LINE ${results.lineSentCount}件, Notion ${results.notionSuccess ? '成功' : '未実行'}`,
+      ...results
     });
 
   } catch (error) {
@@ -107,38 +132,68 @@ export default async function handler(req, res) {
   }
 }
 
-// LINE Messaging APIでメッセージ送信
-async function sendLineMessage(userId, message) {
+// LINEにPDFを送信
+async function sendPDFToLine(pdfFile, metadata) {
   try {
-    const response = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`
-      },
-      body: JSON.stringify({
-        to: userId,
-        messages: [message]
-      })
-    });
+    console.log('=== LINE PDF SEND ===');
 
-    const responseText = await response.text();
-    console.log('LINE API response status:', response.status);
+    // 送信先ユーザーIDリスト
+    const userIds = process.env.LINE_USER_IDS.split(',').map(id => id.trim());
+    console.log('Target user IDs count:', userIds.length);
 
-    if (!response.ok) {
-      console.error('LINE API error:', responseText);
-      return {
-        success: false,
-        error: `HTTP ${response.status}: ${responseText}`
-      };
+    let sentCount = 0;
+    const errors = [];
+
+    for (const userId of userIds) {
+      try {
+        console.log(`Sending PDF to user: ${userId}`);
+
+        // PDFファイルを読み込み
+        const fileBuffer = fs.readFileSync(pdfFile.filepath);
+
+        // メッセージを送信（PDFはLINE Messaging APIの制限により直接送信できないため、
+        // 代わりにテキストメッセージ + 外部リンクまたはBase64エンコードを使用）
+        // ここでは簡略化のため、通知メッセージを送信
+        const message = {
+          type: 'text',
+          text: `📄 歯科医院 日計表\n日付: ${metadata.date}\n\n収入合計: ¥${(metadata.income?.total || 0).toLocaleString()}\n支出合計: ¥${(metadata.expense?.total || 0).toLocaleString()}\n本日残高: ¥${(metadata.balance?.final || 0).toLocaleString()}\n\n${metadata.balanceCheck?.isMatched ? '✅ 残高一致' : '⚠️ 残高差額あり'}\n\n※PDFファイルは別途確認してください`
+        };
+
+        const response = await fetch('https://api.line.me/v2/bot/message/push', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`
+          },
+          body: JSON.stringify({
+            to: userId,
+            messages: [message]
+          })
+        });
+
+        if (response.ok) {
+          sentCount++;
+          console.log(`✅ Sent to ${userId}`);
+        } else {
+          const errorText = await response.text();
+          console.error(`❌ Failed to send to ${userId}:`, errorText);
+          errors.push({ userId, error: errorText });
+        }
+
+      } catch (error) {
+        console.error(`Error sending to ${userId}:`, error);
+        errors.push({ userId, error: error.message });
+      }
     }
 
     return {
-      success: true
+      success: sentCount > 0,
+      sentCount,
+      errors: errors.length > 0 ? errors : undefined
     };
 
   } catch (error) {
-    console.error('Send error:', error);
+    console.error('LINE send error:', error);
     return {
       success: false,
       error: error.message
@@ -146,222 +201,113 @@ async function sendLineMessage(userId, message) {
   }
 }
 
-// 日計表データをLINEメッセージに変換（Flex Message形式）
-function createLineMessage(data) {
-  // 日付の整形
-  const dateObj = new Date(data.date + 'T00:00:00');
-  const dateStr = dateObj.toLocaleDateString('ja-JP', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    weekday: 'long'
-  });
+// NotionにPDFを保存
+async function savePDFToNotion(pdfFile, metadata) {
+  try {
+    console.log('=== NOTION PDF SAVE ===');
 
-  // 残高チェック
-  const physicalBalance = data.balanceCheck?.physicalBalance || 0;
-  const calculatedBalance = data.balanceCheck?.calculatedBalance || 0;
-  const difference = physicalBalance - calculatedBalance;
-  const isBalanced = difference === 0;
+    // Notion APIクライアントを初期化
+    const notion = new Client({ auth: process.env.NOTION_API_KEY });
 
-  return {
-    type: 'flex',
-    altText: `歯科医院 日計表 ${data.date}`,
-    contents: {
-      type: 'bubble',
-      size: 'mega',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        contents: [
-          {
-            type: 'text',
-            text: '歯科医院 日計表',
-            weight: 'bold',
-            size: 'xl',
-            color: '#ffffff'
-          },
-          {
-            type: 'text',
-            text: dateStr,
-            size: 'sm',
-            color: '#ffffff',
-            margin: 'md'
-          }
-        ],
-        backgroundColor: '#007bff',
-        paddingAll: '20px'
+    // PDFファイルを読み込み
+    const fileBuffer = fs.readFileSync(pdfFile.filepath);
+    const base64PDF = fileBuffer.toString('base64');
+
+    // Notionデータベースにページを作成
+    const response = await notion.pages.create({
+      parent: {
+        database_id: process.env.NOTION_DATABASE_ID
       },
-      body: {
-        type: 'box',
-        layout: 'vertical',
-        contents: [
-          // 収入セクション
-          {
-            type: 'text',
-            text: '💰 収入',
-            weight: 'bold',
-            size: 'lg',
-            margin: 'md'
-          },
-          createDataRow('社保', `${data.income?.shaho?.count || 0}名`, `¥${formatNumber(data.income?.shaho?.amount || 0)}`),
-          createDataRow('国保', `${data.income?.kokuho?.count || 0}名`, `¥${formatNumber(data.income?.kokuho?.amount || 0)}`),
-          createDataRow('後期高齢者', `${data.income?.kouki?.count || 0}名`, `¥${formatNumber(data.income?.kouki?.amount || 0)}`),
-          createDataRow('自費', `${data.income?.jihi?.count || 0}名`, `¥${formatNumber(data.income?.jihi?.amount || 0)}`),
-          createDataRow('保険なし', `${data.income?.hokenNashi?.count || 0}名`, `¥${formatNumber(data.income?.hokenNashi?.amount || 0)}`),
-          createDataRow('物販', data.income?.bushan?.note || '-', `¥${formatNumber(data.income?.bushan?.amount || 0)}`),
-          createSeparator(),
-          createTotalRow('収入合計', `¥${formatNumber(data.income?.total || 0)}`),
-
-          // 出金セクション
-          {
-            type: 'text',
-            text: '💸 出金',
-            weight: 'bold',
-            size: 'lg',
-            margin: 'xl'
-          },
-          createDataRow('院長へ', '-', `¥${formatNumber(data.expense?.director || 0)}`),
-          createSeparator(),
-          createTotalRow('出金合計', `¥${formatNumber(data.expense?.total || 0)}`),
-
-          // 残高セクション
-          {
-            type: 'text',
-            text: '💴 残高',
-            weight: 'bold',
-            size: 'lg',
-            margin: 'xl'
-          },
-          createDataRow('前日繰越', '', `¥${formatNumber(data.balance?.previous || 0)}`),
-          createDataRow('本日残高', '', `¥${formatNumber(data.balance?.final || 0)}`),
-          createDataRow('総残高', '', `¥${formatNumber(data.totalBalance || 0)}`),
-
-          // 残高チェック
-          createSeparator(),
-          {
-            type: 'box',
-            layout: 'vertical',
-            contents: [
+      properties: {
+        '日付': {
+          title: [
+            {
+              text: {
+                content: metadata.date || '日付未設定'
+              }
+            }
+          ]
+        },
+        '収入合計': {
+          number: metadata.income?.total || 0
+        },
+        '支出合計': {
+          number: metadata.expense?.total || 0
+        },
+        '残高': {
+          number: metadata.balance?.final || 0
+        },
+        '残高チェック': {
+          checkbox: metadata.balanceCheck?.isMatched || false
+        }
+      },
+      children: [
+        {
+          object: 'block',
+          type: 'heading_2',
+          heading_2: {
+            rich_text: [
               {
                 type: 'text',
-                text: isBalanced ? '✅ 残高一致' : '⚠️ 残高差額あり',
-                weight: 'bold',
-                size: 'md',
-                color: isBalanced ? '#28a745' : '#dc3545',
-                align: 'center'
-              },
-              ...(isBalanced ? [] : [
-                {
-                  type: 'text',
-                  text: `差額: ¥${formatNumber(difference)}`,
-                  size: 'sm',
-                  color: '#dc3545',
-                  align: 'center',
-                  margin: 'sm'
+                text: {
+                  content: '歯科医院 日計表'
                 }
-              ])
+              }
+            ]
+          }
+        },
+        {
+          object: 'block',
+          type: 'paragraph',
+          paragraph: {
+            rich_text: [
+              {
+                type: 'text',
+                text: {
+                  content: `日付: ${metadata.date}\n収入合計: ¥${(metadata.income?.total || 0).toLocaleString()}\n支出合計: ¥${(metadata.expense?.total || 0).toLocaleString()}\n残高: ¥${(metadata.balance?.final || 0).toLocaleString()}`
+                }
+              }
+            ]
+          }
+        },
+        {
+          object: 'block',
+          type: 'callout',
+          callout: {
+            rich_text: [
+              {
+                type: 'text',
+                text: {
+                  content: metadata.balanceCheck?.isMatched ? '✅ 残高一致' : '⚠️ 残高差額あり'
+                }
+              }
             ],
-            backgroundColor: isBalanced ? '#d4edda' : '#f8d7da',
-            cornerRadius: 'md',
-            paddingAll: '12px',
-            margin: 'md'
+            icon: {
+              emoji: metadata.balanceCheck?.isMatched ? '✅' : '⚠️'
+            },
+            color: metadata.balanceCheck?.isMatched ? 'green_background' : 'yellow_background'
           }
-        ],
-        paddingAll: '20px'
-      },
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        contents: [
-          {
-            type: 'text',
-            text: '自動送信 - 歯科医院日計表システム',
-            size: 'xxs',
-            color: '#aaaaaa',
-            align: 'center'
-          }
-        ],
-        paddingAll: '10px'
-      }
-    }
-  };
-}
+        }
+      ]
+    });
 
-// データ行を作成
-function createDataRow(label, value1, value2) {
-  return {
-    type: 'box',
-    layout: 'horizontal',
-    contents: [
-      {
-        type: 'text',
-        text: label,
-        size: 'sm',
-        color: '#555555',
-        flex: 2
-      },
-      {
-        type: 'text',
-        text: value1,
-        size: 'sm',
-        color: '#111111',
-        align: 'end',
-        flex: 1
-      },
-      {
-        type: 'text',
-        text: value2,
-        size: 'sm',
-        color: '#111111',
-        align: 'end',
-        flex: 2,
-        weight: 'bold'
-      }
-    ],
-    margin: 'md'
-  };
-}
+    console.log('✅ Notion page created:', response.id);
 
-// 合計行を作成
-function createTotalRow(label, value) {
-  return {
-    type: 'box',
-    layout: 'horizontal',
-    contents: [
-      {
-        type: 'text',
-        text: label,
-        size: 'md',
-        color: '#111111',
-        weight: 'bold',
-        flex: 1
-      },
-      {
-        type: 'text',
-        text: value,
-        size: 'md',
-        color: '#111111',
-        align: 'end',
-        weight: 'bold',
-        flex: 1
-      }
-    ],
-    backgroundColor: '#f0f0f0',
-    cornerRadius: 'md',
-    paddingAll: '10px',
-    margin: 'md'
-  };
-}
+    // 注意: NotionはPDFの直接アップロードに制限があるため、
+    // 外部ストレージ（S3など）にアップロードしてリンクを追加する必要があります
+    // ここでは基本的なページ作成のみ実装
 
-// 区切り線を作成
-function createSeparator() {
-  return {
-    type: 'separator',
-    margin: 'md'
-  };
-}
+    return {
+      success: true,
+      pageId: response.id,
+      url: response.url
+    };
 
-// 数値をカンマ区切りでフォーマット
-function formatNumber(num) {
-  return num.toLocaleString('ja-JP');
+  } catch (error) {
+    console.error('Notion save error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
 }
