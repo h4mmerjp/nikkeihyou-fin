@@ -1,9 +1,9 @@
-// Vercel API Route for LINE Messaging API & Notion Integration (PDF version)
+// Vercel API Route for LINE Messaging API & Notion Integration (PDF version with Vercel Blob)
 import formidable from 'formidable';
 import fs from 'fs';
-import FormData from 'form-data';
 import fetch from 'node-fetch';
 import { Client } from '@notionhq/client';
+import { put } from '@vercel/blob';
 
 export const config = {
   api: {
@@ -35,6 +35,7 @@ export default async function handler(req, res) {
     console.log('- LINE_USER_IDS exists:', !!process.env.LINE_USER_IDS);
     console.log('- NOTION_API_KEY exists:', !!process.env.NOTION_API_KEY);
     console.log('- NOTION_DATABASE_ID exists:', !!process.env.NOTION_DATABASE_ID);
+    console.log('- BLOB_READ_WRITE_TOKEN exists:', !!process.env.BLOB_READ_WRITE_TOKEN);
 
     // ファイルパース
     const form = formidable({
@@ -68,13 +69,39 @@ export default async function handler(req, res) {
       lineSuccess: false,
       lineSentCount: 0,
       notionSuccess: false,
+      blobUrl: null,
       errors: []
     };
+
+    // PDFをVercel Blobにアップロード
+    let pdfUrl = null;
+    if (process.env.BLOB_READ_WRITE_TOKEN) {
+      try {
+        console.log('=== UPLOADING PDF TO VERCEL BLOB ===');
+        const fileBuffer = fs.readFileSync(pdfFile.filepath);
+        const fileName = `daily-reports/${metadata.date || 'unknown'}/${pdfFile.originalFilename}`;
+
+        const blob = await put(fileName, fileBuffer, {
+          access: 'public',
+          contentType: 'application/pdf',
+          token: process.env.BLOB_READ_WRITE_TOKEN,
+        });
+
+        pdfUrl = blob.url;
+        results.blobUrl = pdfUrl;
+        console.log('✅ PDF uploaded to Vercel Blob:', pdfUrl);
+      } catch (error) {
+        console.error('Vercel Blob upload error:', error);
+        results.errors.push({ service: 'Vercel Blob', error: error.message });
+      }
+    } else {
+      console.log('Vercel Blob設定がスキップされました（BLOB_READ_WRITE_TOKEN未設定）');
+    }
 
     // LINE送信処理
     if (process.env.LINE_CHANNEL_ACCESS_TOKEN && process.env.LINE_USER_IDS) {
       try {
-        const lineResult = await sendPDFToLine(pdfFile, metadata);
+        const lineResult = await sendPDFToLine(pdfFile, metadata, pdfUrl);
         results.lineSuccess = lineResult.success;
         results.lineSentCount = lineResult.sentCount || 0;
         if (!lineResult.success) {
@@ -91,7 +118,7 @@ export default async function handler(req, res) {
     // Notion保存処理
     if (process.env.NOTION_API_KEY && process.env.NOTION_DATABASE_ID) {
       try {
-        const notionResult = await savePDFToNotion(pdfFile, metadata);
+        const notionResult = await savePDFToNotion(pdfFile, metadata, pdfUrl);
         results.notionSuccess = notionResult.success;
         if (!notionResult.success) {
           results.errors.push({ service: 'Notion', error: notionResult.error });
@@ -133,7 +160,7 @@ export default async function handler(req, res) {
 }
 
 // LINEにPDFを送信
-async function sendPDFToLine(pdfFile, metadata) {
+async function sendPDFToLine(pdfFile, metadata, pdfUrl) {
   try {
     console.log('=== LINE PDF SEND ===');
 
@@ -148,15 +175,19 @@ async function sendPDFToLine(pdfFile, metadata) {
       try {
         console.log(`Sending PDF to user: ${userId}`);
 
-        // PDFファイルを読み込み
-        const fileBuffer = fs.readFileSync(pdfFile.filepath);
+        // メッセージを作成
+        let messageText = `📄 歯科医院 日計表\n日付: ${metadata.date}\n\n収入合計: ¥${(metadata.income?.total || 0).toLocaleString()}\n支出合計: ¥${(metadata.expense?.total || 0).toLocaleString()}\n本日残高: ¥${(metadata.balance?.final || 0).toLocaleString()}\n\n${metadata.balanceCheck?.isMatched ? '✅ 残高一致' : '⚠️ 残高差額あり'}`;
 
-        // メッセージを送信（PDFはLINE Messaging APIの制限により直接送信できないため、
-        // 代わりにテキストメッセージ + 外部リンクまたはBase64エンコードを使用）
-        // ここでは簡略化のため、通知メッセージを送信
+        // PDFのURLがある場合は追加
+        if (pdfUrl) {
+          messageText += `\n\nPDFダウンロード:\n${pdfUrl}`;
+        } else {
+          messageText += `\n\n※PDFファイルは別途確認してください`;
+        }
+
         const message = {
           type: 'text',
-          text: `📄 歯科医院 日計表\n日付: ${metadata.date}\n\n収入合計: ¥${(metadata.income?.total || 0).toLocaleString()}\n支出合計: ¥${(metadata.expense?.total || 0).toLocaleString()}\n本日残高: ¥${(metadata.balance?.final || 0).toLocaleString()}\n\n${metadata.balanceCheck?.isMatched ? '✅ 残高一致' : '⚠️ 残高差額あり'}\n\n※PDFファイルは別途確認してください`
+          text: messageText
         };
 
         const response = await fetch('https://api.line.me/v2/bot/message/push', {
@@ -202,16 +233,76 @@ async function sendPDFToLine(pdfFile, metadata) {
 }
 
 // NotionにPDFを保存
-async function savePDFToNotion(pdfFile, metadata) {
+async function savePDFToNotion(pdfFile, metadata, pdfUrl) {
   try {
     console.log('=== NOTION PDF SAVE ===');
 
     // Notion APIクライアントを初期化
     const notion = new Client({ auth: process.env.NOTION_API_KEY });
 
-    // PDFファイルを読み込み
-    const fileBuffer = fs.readFileSync(pdfFile.filepath);
-    const base64PDF = fileBuffer.toString('base64');
+    // ページコンテンツを準備
+    const pageChildren = [
+      {
+        object: 'block',
+        type: 'heading_2',
+        heading_2: {
+          rich_text: [
+            {
+              type: 'text',
+              text: {
+                content: '歯科医院 日計表'
+              }
+            }
+          ]
+        }
+      },
+      {
+        object: 'block',
+        type: 'paragraph',
+        paragraph: {
+          rich_text: [
+            {
+              type: 'text',
+              text: {
+                content: `日付: ${metadata.date}\n収入合計: ¥${(metadata.income?.total || 0).toLocaleString()}\n支出合計: ¥${(metadata.expense?.total || 0).toLocaleString()}\n残高: ¥${(metadata.balance?.final || 0).toLocaleString()}`
+              }
+            }
+          ]
+        }
+      },
+      {
+        object: 'block',
+        type: 'callout',
+        callout: {
+          rich_text: [
+            {
+              type: 'text',
+              text: {
+                content: metadata.balanceCheck?.isMatched ? '✅ 残高一致' : '⚠️ 残高差額あり'
+              }
+            }
+          ],
+          icon: {
+            emoji: metadata.balanceCheck?.isMatched ? '✅' : '⚠️'
+          },
+          color: metadata.balanceCheck?.isMatched ? 'green_background' : 'yellow_background'
+        }
+      }
+    ];
+
+    // PDFのURLがある場合はファイルブロックを追加
+    if (pdfUrl) {
+      pageChildren.push({
+        object: 'block',
+        type: 'file',
+        file: {
+          type: 'external',
+          external: {
+            url: pdfUrl
+          }
+        }
+      });
+    }
 
     // Notionデータベースにページを作成
     const response = await notion.pages.create({
@@ -241,61 +332,11 @@ async function savePDFToNotion(pdfFile, metadata) {
           checkbox: metadata.balanceCheck?.isMatched || false
         }
       },
-      children: [
-        {
-          object: 'block',
-          type: 'heading_2',
-          heading_2: {
-            rich_text: [
-              {
-                type: 'text',
-                text: {
-                  content: '歯科医院 日計表'
-                }
-              }
-            ]
-          }
-        },
-        {
-          object: 'block',
-          type: 'paragraph',
-          paragraph: {
-            rich_text: [
-              {
-                type: 'text',
-                text: {
-                  content: `日付: ${metadata.date}\n収入合計: ¥${(metadata.income?.total || 0).toLocaleString()}\n支出合計: ¥${(metadata.expense?.total || 0).toLocaleString()}\n残高: ¥${(metadata.balance?.final || 0).toLocaleString()}`
-                }
-              }
-            ]
-          }
-        },
-        {
-          object: 'block',
-          type: 'callout',
-          callout: {
-            rich_text: [
-              {
-                type: 'text',
-                text: {
-                  content: metadata.balanceCheck?.isMatched ? '✅ 残高一致' : '⚠️ 残高差額あり'
-                }
-              }
-            ],
-            icon: {
-              emoji: metadata.balanceCheck?.isMatched ? '✅' : '⚠️'
-            },
-            color: metadata.balanceCheck?.isMatched ? 'green_background' : 'yellow_background'
-          }
-        }
-      ]
+      children: pageChildren
     });
 
     console.log('✅ Notion page created:', response.id);
-
-    // 注意: NotionはPDFの直接アップロードに制限があるため、
-    // 外部ストレージ（S3など）にアップロードしてリンクを追加する必要があります
-    // ここでは基本的なページ作成のみ実装
+    console.log('✅ Page URL:', response.url);
 
     return {
       success: true,
