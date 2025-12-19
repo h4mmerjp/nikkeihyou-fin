@@ -59,35 +59,58 @@
 1. チャンネルの「Messaging API」タブで「Add friend」ボタンのQRコードを表示
 2. スマートフォンのLINEアプリでQRコードをスキャンして友だちに追加
 
-#### Step 2: ユーザーIDの取得
+#### Step 2: ユーザーID/グループIDの取得
 
-**簡単な方法**: 以下のテストスクリプトを使用
+**テストスクリプトを使用**:
 
-1. プロジェクトの `api` フォルダに `get-line-user.js` を作成：
+プロジェクトに `api/get-line-user.js` が含まれています。このスクリプトを使用してIDを取得します。
 
-```javascript
-export default async function handler(req, res) {
-  const events = req.body?.events || [];
+1. **アプリをデプロイ**
+   - 最新のコードをVercelにデプロイ
+   - デプロイ完了を確認（1-2分）
 
-  if (events.length > 0) {
-    const userId = events[0].source.userId;
-    console.log('User ID:', userId);
-    return res.status(200).json({ userId });
-  }
-
-  return res.status(200).json({ message: 'No events' });
-}
-```
-
-2. デプロイ後、LINE Developers Consoleで：
+2. **LINE Developers Consoleで設定**
    - 「Messaging API」タブを開く
-   - 「Webhook URL」を `https://your-app.vercel.app/api/get-line-user` に設定
+   - 「Webhook URL」を設定：
+     ```
+     https://your-app.vercel.app/api/get-line-user
+     ```
+   - 「Verify」をクリック → 成功を確認
    - 「Use webhook」を有効化
-   - 「Verify」をクリックして接続確認
 
-3. LINE公式アカウントに何かメッセージを送信
+3. **IDを取得**
 
-4. VercelのログでユーザーIDを確認（`U` で始まる33文字の文字列）
+   **個人用ユーザーIDの場合**:
+   - LINE公式アカウント（1対1トーク）でメッセージを送信
+   - Vercel Dashboard → Functions → Logs を確認
+   - ログに表示される:
+     ```
+     Source Type: user
+     Source ID: U1234567890abcdef1234567890abcdef
+     ```
+
+   **グループIDの場合**:
+   - LINE公式アカウントをグループに招待
+   - グループ内でメッセージを送信
+   - Vercel Dashboard → Functions → Logs を確認
+   - ログに表示される:
+     ```
+     Source Type: group
+     Source ID: C9876543210fedcba9876543210fedcba
+     ```
+
+4. **取得したIDを環境変数に設定**（後述）
+
+5. **重要: テストスクリプトを削除**
+
+   IDを取得したら、セキュリティのためこのファイルを削除してください：
+   ```bash
+   git rm api/get-line-user.js
+   git commit -m "Remove temporary test script"
+   git push
+   ```
+
+   または、Webhook URLを空に戻してファイルを残しておいても構いません。
 
 ---
 
@@ -166,10 +189,17 @@ export default async function handler(req, res) {
 
 #### LINE_USER_IDS
 - **Key**: `LINE_USER_IDS`
-- **Value**: パート1.5で取得したユーザーID（複数の場合はカンマ区切り）
-  - 例（1人）: `U1234567890abcdef1234567890abcdef`
-  - 例（複数）: `U1234567890abcdef1234567890abcdef,Uabcdef1234567890abcdef1234567890`
+- **Value**: パート1.5で取得したユーザーIDまたはグループID（複数の場合はカンマ区切り）
+  - 例（個人1人）: `U1234567890abcdef1234567890abcdef`
+  - 例（個人複数）: `U1234567890abcdef1234567890abcdef,Uabcdef1234567890abcdef1234567890`
+  - 例（グループ1つ）: `C9876543210fedcba9876543210fedcba`
+  - 例（個人+グループ）: `U1234567890abcdef1234567890abcdef,C9876543210fedcba9876543210fedcba`
 - **Environment**: Production, Preview, Development すべてにチェック
+
+**注意**:
+- ユーザーIDは `U` で始まる33文字
+- グループIDは `C` で始まる33文字
+- 個人とグループを混在させることも可能
 
 #### NOTION_API_KEY
 - **Key**: `NOTION_API_KEY`
@@ -231,9 +261,20 @@ export default async function handler(req, res) {
 - Vercel の環境変数を更新
 - 再デプロイ
 
-**ユーザーIDが間違っている**
-- ユーザーIDは `U` で始まる33文字の文字列です
+**ユーザーID/グループIDが間違っている**
+- ユーザーIDは `U` で始まる33文字の文字列
+- グループIDは `C` で始まる33文字の文字列
 - 正しいIDかどうか確認
+- カンマ区切りの前後にスペースが入っていないか確認
+
+**Webhook検証が失敗する**
+- Webhook URLが正しいか確認（`https://your-app.vercel.app/api/get-line-user`）
+- デプロイが完了しているか確認
+- 「Verify」ボタンで検証が成功することを確認
+
+**グループに通知が届かない**
+- LINE公式アカウントがグループから退出させられていないか確認
+- グループIDが正しいか確認（`C` で始まる33文字）
 
 ### Notionに保存されない
 
