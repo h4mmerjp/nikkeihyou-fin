@@ -5,8 +5,8 @@
 ## 機能概要
 
 - **PDF生成**: 印刷レイアウトをそのままPDF化
-- **Vercel Blobストレージ**: PDFファイルをVercelのクラウドストレージに保存
-- **LINE送信**: 日計表のサマリーとPDFダウンロードリンクをLINEで通知
+- **Notion直接アップロード**: PDFファイルをNotion APIで直接アップロード
+- **LINE送信**: 日計表のサマリーとNotionページURLをLINEで通知
 - **Notion保存**: 日計表データとPDFファイルをNotionデータベースに保存
 
 ## 前提条件
@@ -14,31 +14,7 @@
 - LINEアカウント
 - LINE Developers アカウント
 - Notionアカウント
-- Vercelアカウント（デプロイ用 + Blob ストレージ用）
-
----
-
-## パート0: Vercel Blob ストレージの設定
-
-### 0.1 Vercel Blob を有効化
-
-1. [Vercel Dashboard](https://vercel.com/dashboard) にログイン
-2. プロジェクトを選択
-3. 「Storage」タブを開く
-4. 「Create Database」→「Blob」を選択
-5. データベース名を入力（例：「daily-reports-pdf」）
-6. リージョンを選択（日本の場合は「Tokyo」推奨）
-7. 「Create」をクリック
-
-### 0.2 Blob トークンの取得
-
-Vercel Blobを作成すると、環境変数 `BLOB_READ_WRITE_TOKEN` が自動的にプロジェクトに追加されます。
-
-確認方法：
-1. 「Settings」→「Environment Variables」を開く
-2. `BLOB_READ_WRITE_TOKEN` が存在することを確認
-
-**注意**: このトークンは自動生成されるため、手動で設定する必要はありません。
+- Vercelアカウント（デプロイ用）
 
 ---
 
@@ -148,6 +124,9 @@ export default async function handler(req, res) {
 | 支出合計 | Number | 支出の合計金額 |
 | 残高 | Number | 本日の残高 |
 | 残高チェック | Checkbox | 残高が一致しているか |
+| **PDF** | **Files & media** | **PDFファイルの添付（重要）** |
+
+**重要**: 「PDF」プロパティは必ず「Files & media」タイプで作成してください。
 
 ### 2.4 データベースIDの取得
 
@@ -203,11 +182,6 @@ export default async function handler(req, res) {
 - **Value**: パート2.4で取得したデータベースID（32文字の英数字）
 - **Environment**: Production, Preview, Development すべてにチェック
 
-#### BLOB_READ_WRITE_TOKEN（自動設定済み）
-- Vercel Blobを作成すると自動的に設定されます
-- 手動で追加する必要はありません
-- 確認のみ行ってください
-
 4. 「Save」をクリック
 
 ### 3.3 再デプロイ
@@ -232,20 +206,15 @@ export default async function handler(req, res) {
 1. 「LINE送信」ボタンをクリック
 2. 「PDFを生成中...」→「LINEとNotionに送信中...」のメッセージが表示される
 3. LINEアプリで通知が届くことを確認
+4. 通知にNotionページのURLが含まれていることを確認
 
 ### 3. Notion保存確認
 
 1. Notionのデータベースを開く
 2. 新しいエントリが作成されていることを確認
 3. 日付、収入合計、支出合計、残高が正しく保存されているか確認
-4. ページ内にPDFファイルブロックが追加されていることを確認
-5. PDFファイルをクリックしてダウンロードできることを確認
-
-### 4. Vercel Blob確認
-
-1. Vercel Dashboard の「Storage」タブを開く
-2. Blob ストレージを選択
-3. `daily-reports/[日付]/日計表_[日付].pdf` というファイルが保存されていることを確認
+4. 「PDF」プロパティにPDFファイルが添付されていることを確認
+5. PDFファイルをクリックしてダウンロード・プレビューできることを確認
 
 ---
 
@@ -281,13 +250,18 @@ export default async function handler(req, res) {
 - データベースページの「...」メニューから「Add connections」
 - Integrationを選択して接続
 
-**プロパティ名が一致しない**
+**プロパティ名やタイプが一致しない**
 - データベースのプロパティ名が以下と一致しているか確認：
   - 日付（Title型）
   - 収入合計（Number型）
   - 支出合計（Number型）
   - 残高（Number型）
   - 残高チェック（Checkbox型）
+  - **PDF（Files & media型）** ← 必須
+
+**PDFアップロードエラー**
+- PDFファイルサイズが15MBを超えていないか確認
+- Notion APIのファイルアップロード制限（20MB）を超えていないか確認
 
 ### PDFが生成されない
 
@@ -315,10 +289,6 @@ export default async function handler(req, res) {
   - 環境変数で管理する
   - 他人に教えない
 
-**PDFのストレージコストについて**
-- Vercel Blobは無料プランで最大10GB/月まで利用可能
-- 超過した場合は従量課金（詳細は[Vercel料金ページ](https://vercel.com/docs/storage/vercel-blob/usage-and-pricing)を確認）
-
 ---
 
 ## サポート
@@ -327,8 +297,9 @@ export default async function handler(req, res) {
 
 1. [LINE Messaging API ドキュメント](https://developers.line.biz/ja/docs/messaging-api/)
 2. [Notion API ドキュメント](https://developers.notion.com/)
-3. Vercel のデプロイログ
-4. ブラウザのコンソールログ
+3. [Notion File Upload API](https://developers.notion.com/reference/upload-a-file)
+4. Vercel のデプロイログ
+5. ブラウザのコンソールログ
 
 ---
 

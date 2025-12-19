@@ -1,9 +1,8 @@
-// Vercel API Route for LINE Messaging API & Notion Integration (PDF version with Vercel Blob)
+// Vercel API Route for LINE Messaging API & Notion Integration (Direct file upload to Notion)
 import formidable from 'formidable';
 import fs from 'fs';
 import fetch from 'node-fetch';
 import { Client } from '@notionhq/client';
-import { put } from '@vercel/blob';
 
 export const config = {
   api: {
@@ -35,7 +34,6 @@ export default async function handler(req, res) {
     console.log('- LINE_USER_IDS exists:', !!process.env.LINE_USER_IDS);
     console.log('- NOTION_API_KEY exists:', !!process.env.NOTION_API_KEY);
     console.log('- NOTION_DATABASE_ID exists:', !!process.env.NOTION_DATABASE_ID);
-    console.log('- BLOB_READ_WRITE_TOKEN exists:', !!process.env.BLOB_READ_WRITE_TOKEN);
 
     // ファイルパース
     const form = formidable({
@@ -69,39 +67,34 @@ export default async function handler(req, res) {
       lineSuccess: false,
       lineSentCount: 0,
       notionSuccess: false,
-      blobUrl: null,
+      notionPageUrl: null,
       errors: []
     };
 
-    // PDFをVercel Blobにアップロード
-    let pdfUrl = null;
-    if (process.env.BLOB_READ_WRITE_TOKEN) {
+    // Notion保存処理（ファイルを直接アップロード）
+    let notionPageUrl = null;
+    if (process.env.NOTION_API_KEY && process.env.NOTION_DATABASE_ID) {
       try {
-        console.log('=== UPLOADING PDF TO VERCEL BLOB ===');
-        const fileBuffer = fs.readFileSync(pdfFile.filepath);
-        const fileName = `daily-reports/${metadata.date || 'unknown'}/${pdfFile.originalFilename}`;
+        const notionResult = await savePDFToNotion(pdfFile, metadata);
+        results.notionSuccess = notionResult.success;
+        results.notionPageUrl = notionResult.url;
+        notionPageUrl = notionResult.url;
 
-        const blob = await put(fileName, fileBuffer, {
-          access: 'public',
-          contentType: 'application/pdf',
-          token: process.env.BLOB_READ_WRITE_TOKEN,
-        });
-
-        pdfUrl = blob.url;
-        results.blobUrl = pdfUrl;
-        console.log('✅ PDF uploaded to Vercel Blob:', pdfUrl);
+        if (!notionResult.success) {
+          results.errors.push({ service: 'Notion', error: notionResult.error });
+        }
       } catch (error) {
-        console.error('Vercel Blob upload error:', error);
-        results.errors.push({ service: 'Vercel Blob', error: error.message });
+        console.error('Notion保存エラー:', error);
+        results.errors.push({ service: 'Notion', error: error.message });
       }
     } else {
-      console.log('Vercel Blob設定がスキップされました（BLOB_READ_WRITE_TOKEN未設定）');
+      console.log('Notion設定がスキップされました（環境変数未設定）');
     }
 
     // LINE送信処理
     if (process.env.LINE_CHANNEL_ACCESS_TOKEN && process.env.LINE_USER_IDS) {
       try {
-        const lineResult = await sendPDFToLine(pdfFile, metadata, pdfUrl);
+        const lineResult = await sendPDFToLine(pdfFile, metadata, notionPageUrl);
         results.lineSuccess = lineResult.success;
         results.lineSentCount = lineResult.sentCount || 0;
         if (!lineResult.success) {
@@ -113,22 +106,6 @@ export default async function handler(req, res) {
       }
     } else {
       console.log('LINE設定がスキップされました（環境変数未設定）');
-    }
-
-    // Notion保存処理
-    if (process.env.NOTION_API_KEY && process.env.NOTION_DATABASE_ID) {
-      try {
-        const notionResult = await savePDFToNotion(pdfFile, metadata, pdfUrl);
-        results.notionSuccess = notionResult.success;
-        if (!notionResult.success) {
-          results.errors.push({ service: 'Notion', error: notionResult.error });
-        }
-      } catch (error) {
-        console.error('Notion保存エラー:', error);
-        results.errors.push({ service: 'Notion', error: error.message });
-      }
-    } else {
-      console.log('Notion設定がスキップされました（環境変数未設定）');
     }
 
     // 結果を返す
@@ -160,7 +137,7 @@ export default async function handler(req, res) {
 }
 
 // LINEにPDFを送信
-async function sendPDFToLine(pdfFile, metadata, pdfUrl) {
+async function sendPDFToLine(pdfFile, metadata, notionPageUrl) {
   try {
     console.log('=== LINE PDF SEND ===');
 
@@ -178,11 +155,9 @@ async function sendPDFToLine(pdfFile, metadata, pdfUrl) {
         // メッセージを作成
         let messageText = `📄 歯科医院 日計表\n日付: ${metadata.date}\n\n収入合計: ¥${(metadata.income?.total || 0).toLocaleString()}\n支出合計: ¥${(metadata.expense?.total || 0).toLocaleString()}\n本日残高: ¥${(metadata.balance?.final || 0).toLocaleString()}\n\n${metadata.balanceCheck?.isMatched ? '✅ 残高一致' : '⚠️ 残高差額あり'}`;
 
-        // PDFのURLがある場合は追加
-        if (pdfUrl) {
-          messageText += `\n\nPDFダウンロード:\n${pdfUrl}`;
-        } else {
-          messageText += `\n\n※PDFファイルは別途確認してください`;
+        // NotionページのURLがある場合は追加
+        if (notionPageUrl) {
+          messageText += `\n\nNotionページ:\n${notionPageUrl}`;
         }
 
         const message = {
@@ -232,15 +207,29 @@ async function sendPDFToLine(pdfFile, metadata, pdfUrl) {
   }
 }
 
-// NotionにPDFを保存
-async function savePDFToNotion(pdfFile, metadata, pdfUrl) {
+// NotionにPDFを直接アップロードして保存
+async function savePDFToNotion(pdfFile, metadata) {
   try {
-    console.log('=== NOTION PDF SAVE ===');
+    console.log('=== NOTION PDF UPLOAD ===');
 
     // Notion APIクライアントを初期化
     const notion = new Client({ auth: process.env.NOTION_API_KEY });
 
-    // ページコンテンツを準備
+    // PDFファイルを読み込み
+    const fileBuffer = fs.readFileSync(pdfFile.filepath);
+    const fileName = pdfFile.originalFilename || `日計表_${metadata.date}.pdf`;
+
+    console.log(`Uploading PDF to Notion: ${fileName} (${fileBuffer.length} bytes)`);
+
+    // 1. Notion APIでファイルをアップロード
+    const uploadResponse = await notion.files.upload({
+      file: fileBuffer,
+      filename: fileName
+    });
+
+    console.log('File uploaded to Notion:', uploadResponse.id);
+
+    // 2. ページコンテンツを準備
     const pageChildren = [
       {
         object: 'block',
@@ -290,21 +279,7 @@ async function savePDFToNotion(pdfFile, metadata, pdfUrl) {
       }
     ];
 
-    // PDFのURLがある場合はファイルブロックを追加
-    if (pdfUrl) {
-      pageChildren.push({
-        object: 'block',
-        type: 'file',
-        file: {
-          type: 'external',
-          external: {
-            url: pdfUrl
-          }
-        }
-      });
-    }
-
-    // Notionデータベースにページを作成
+    // 3. Notionデータベースにページを作成（PDFファイルをプロパティに添付）
     const response = await notion.pages.create({
       parent: {
         database_id: process.env.NOTION_DATABASE_ID
@@ -330,6 +305,17 @@ async function savePDFToNotion(pdfFile, metadata, pdfUrl) {
         },
         '残高チェック': {
           checkbox: metadata.balanceCheck?.isMatched || false
+        },
+        'PDF': {
+          files: [
+            {
+              type: 'file_upload',
+              file_upload: {
+                id: uploadResponse.id
+              },
+              name: fileName
+            }
+          ]
         }
       },
       children: pageChildren
@@ -346,6 +332,7 @@ async function savePDFToNotion(pdfFile, metadata, pdfUrl) {
 
   } catch (error) {
     console.error('Notion save error:', error);
+    console.error('Error details:', error.body || error.message);
     return {
       success: false,
       error: error.message
