@@ -4,11 +4,19 @@
 export default async function handler(req, res) {
   // CORS設定
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
+  }
+
+  // LINE Webhook検証用（GETリクエスト）
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      message: 'LINE Webhook endpoint is ready',
+      status: 'ok'
+    });
   }
 
   const events = req.body?.events || [];
