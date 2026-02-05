@@ -1,0 +1,67 @@
+name: Process Daily Report PDF
+
+on:
+  push:
+    paths:
+      - 'uploads/*.pdf'
+      - 'uploads/**/*.pdf'
+  workflow_dispatch:
+    inputs:
+      pdf_path:
+        description: 'Path to the PDF file to process'
+        required: true
+        type: string
+
+jobs:
+  process-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Get changed PDF files
+        id: changed-files
+        if: github.event_name == 'push'
+        run: |
+          echo "files=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '\.pdf$' | head -1)" >> $GITHUB_OUTPUT
+      
+      - name: Process PDF (push trigger)
+        if: github.event_name == 'push'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: |
+          PDF_FILE="${{ steps.changed-files.outputs.files }}"
+          if [ -n "$PDF_FILE" ] && [ -f "$PDF_FILE" ]; then
+            node scripts/process_daily_report.js "$PDF_FILE"
+          else
+            echo "No PDF file found to process"
+          fi
+      
+      - name: Process PDF (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: node scripts/process_daily_report.js "${{ inputs.pdf_path }}"
+      
+      - name: Upload generated PDF as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-report
+          path: output/*.pdf
+          if-no-files-found: ignore
+          retention-days: 7
