@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>歯科医院 日計表入力</title>
+    <!-- PDF生成ライブラリ -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
         @media print { 
             @page { 
@@ -454,9 +457,18 @@
         .btn-export {
             background-color: #cccccc;
         }
-        
+
         .btn-export:hover {
             background-color: #aaaaaa;
+        }
+
+        .btn-line {
+            background-color: #00b900;
+            color: white;
+        }
+
+        .btn-line:hover {
+            background-color: #009900;
         }
         
         .modal {
@@ -965,6 +977,7 @@
         <div class="buttons-section no-print">
             <button class="btn btn-clear" onclick="clearAll()">全クリア</button>
             <button class="btn btn-print" onclick="printReport()">印刷</button>
+            <button class="btn btn-line" onclick="sendToLine()">LINE送信</button>
             <button class="btn btn-export" onclick="exportData()">データエクスポート</button>
         </div>
     </div>
@@ -1679,6 +1692,236 @@
                 console.error('エクスポート処理でエラー:', error);
                 logDebug(`エクスポートエラー: ${error.message}`);
                 showMessage('エクスポート処理中にエラーが発生しました。');
+            }
+        }
+
+        // PDF生成関数
+        async function generatePDF() {
+            logDebug('PDF生成開始');
+            showMessage('PDFを生成中...');
+
+            try {
+                // 印刷用の日付表示を更新
+                updateDateDisplay();
+
+                // 印刷用のコンテナを取得
+                const container = document.querySelector('.app-container');
+
+                // 一時的に印刷モードに切り替え
+                const originalClass = container.className;
+                container.classList.add('pdf-generating');
+
+                // html2canvasで画像化
+                const canvas = await html2canvas(container, {
+                    scale: 2,
+                    useCORS: true,
+                    logging: false,
+                    backgroundColor: '#ffffff',
+                    width: 1200,
+                    height: 850
+                });
+
+                // クラスを元に戻す
+                container.className = originalClass;
+
+                // jsPDFでPDF作成（B5横向き）
+                const { jsPDF } = window.jspdf;
+                const pdf = new jsPDF({
+                    orientation: 'landscape',
+                    unit: 'mm',
+                    format: 'b5'
+                });
+
+                const imgData = canvas.toDataURL('image/png');
+                const pdfWidth = pdf.internal.pageSize.getWidth();
+                const pdfHeight = pdf.internal.pageSize.getHeight();
+
+                pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+
+                // PDFをBlobとして取得
+                const pdfBlob = pdf.output('blob');
+
+                logDebug(`PDF生成完了: ${(pdfBlob.size / 1024).toFixed(2)}KB`);
+
+                return pdfBlob;
+
+            } catch (error) {
+                console.error('PDF生成エラー:', error);
+                logDebug(`PDF生成エラー: ${error.message}`);
+                throw new Error('PDF生成に失敗しました: ' + error.message);
+            }
+        }
+
+        // LINE送信（PDF版）
+        async function sendToLine() {
+            try {
+                logDebug('LINE送信処理開始（PDF版）');
+
+                // 日付チェック
+                const reportDate = document.getElementById('reportDate').value;
+                if (!reportDate) {
+                    showMessage('日付を入力してください');
+                    logDebug('エラー: 日付が未入力');
+                    return;
+                }
+
+                // PDFを生成
+                const pdfBlob = await generatePDF();
+
+                // FormDataを作成
+                const formData = new FormData();
+                formData.append('pdf', pdfBlob, `日計表_${reportDate}.pdf`);
+
+                // データエクスポートと同じ形式でメタデータを準備
+                const data = {
+                    date: document.getElementById('reportDate').value || 'no-date',
+                    income: {
+                        previousDifference: {
+                            sign: previousDifferenceSign,
+                            amount: parseInt(document.getElementById('previousDifference').value) || 0,
+                            signedAmount: previousDifferenceSign === '+' ?
+                                (parseInt(document.getElementById('previousDifference').value) || 0) :
+                                -(parseInt(document.getElementById('previousDifference').value) || 0)
+                        },
+                        todayDifference: {
+                            sign: todayDifferenceSign,
+                            amount: parseInt(document.getElementById('todayDifference').value) || 0,
+                            signedAmount: todayDifferenceSign === '+' ?
+                                (parseInt(document.getElementById('todayDifference').value) || 0) :
+                                -(parseInt(document.getElementById('todayDifference').value) || 0)
+                        },
+                        shaho: {
+                            count: parseInt(document.getElementById('shahoCount').value) || 0,
+                            amount: parseInt(document.getElementById('shahoIncome').value) || 0
+                        },
+                        kokuho: {
+                            count: parseInt(document.getElementById('kokuhoCount').value) || 0,
+                            amount: parseInt(document.getElementById('kokuhoIncome').value) || 0
+                        },
+                        kouki: {
+                            count: parseInt(document.getElementById('koukiCount').value) || 0,
+                            amount: parseInt(document.getElementById('koukiIncome').value) || 0
+                        },
+                        jihi: {
+                            count: parseInt(document.getElementById('jihiCount').value) || 0,
+                            amount: parseInt(document.getElementById('jihiIncome').value) || 0
+                        },
+                        hokenNashi: {
+                            count: parseInt(document.getElementById('hokenNashiCount').value) || 0,
+                            amount: parseInt(document.getElementById('hokenNashiIncome').value) || 0
+                        },
+                        bushan: {
+                            note: document.getElementById('bushanNote').value || '',
+                            amount: parseInt(document.getElementById('bushanIncome').value) || 0
+                        },
+                        extra1: {
+                            subject: document.getElementById('extraIncome1Subject').value || '',
+                            destination: document.getElementById('extraIncome1Destination').value || '',
+                            note: document.getElementById('extraIncome1Note').value || '',
+                            amount: parseInt(document.getElementById('extraIncome1Amount').value) || 0
+                        },
+                        extra2: {
+                            subject: document.getElementById('extraIncome2Subject').value || '',
+                            destination: document.getElementById('extraIncome2Destination').value || '',
+                            note: document.getElementById('extraIncome2Note').value || '',
+                            amount: parseInt(document.getElementById('extraIncome2Amount').value) || 0
+                        },
+                        total: parseInt(document.getElementById('incomeTotal').textContent) || 0
+                    },
+                    expense: {
+                        expense1: {
+                            subject: document.getElementById('expense1Subject').value || '',
+                            destination: document.getElementById('expense1Destination').value || '',
+                            note: document.getElementById('expense1Note').value || '',
+                            amount: parseInt(document.getElementById('expense1').value) || 0
+                        },
+                        expense2: {
+                            subject: document.getElementById('expense2Subject').value || '',
+                            destination: document.getElementById('expense2Destination').value || '',
+                            note: document.getElementById('expense2Note').value || '',
+                            amount: parseInt(document.getElementById('expense2').value) || 0
+                        },
+                        expense3: {
+                            subject: document.getElementById('expense3Subject').value || '',
+                            destination: document.getElementById('expense3Destination').value || '',
+                            note: document.getElementById('expense3Note').value || '',
+                            amount: parseInt(document.getElementById('expense3').value) || 0
+                        },
+                        director: parseInt(document.getElementById('expenseDirector').value) || 0,
+                        total: parseInt(document.getElementById('expenseTotal').textContent) || 0
+                    },
+                    balance: {
+                        previous: parseInt(document.getElementById('previousBalance').value) || 0,
+                        final: parseInt(document.getElementById('finalBalance').textContent) || 0
+                    },
+                    stock: {
+                        stock500: parseInt(document.getElementById('stock500').value) || 0,
+                        stock100: parseInt(document.getElementById('stock100').value) || 0,
+                        stock50: parseInt(document.getElementById('stock50').value) || 0,
+                        stock10: parseInt(document.getElementById('stock10').value) || 0,
+                        stock5: parseInt(document.getElementById('stock5').value) || 0,
+                        stock1: parseInt(document.getElementById('stock1').value) || 0,
+                        total: parseInt(document.getElementById('stockGrandTotal').textContent) || 0
+                    },
+                    currency: {
+                        bill10000: parseInt(document.getElementById('bill10000').value) || 0,
+                        bill5000: parseInt(document.getElementById('bill5000').value) || 0,
+                        bill2000: parseInt(document.getElementById('bill2000').value) || 0,
+                        bill1000: parseInt(document.getElementById('bill1000').value) || 0,
+                        coin500: parseInt(document.getElementById('coin500').value) || 0,
+                        coin100: parseInt(document.getElementById('coin100').value) || 0,
+                        coin50: parseInt(document.getElementById('coin50').value) || 0,
+                        coin10: parseInt(document.getElementById('coin10').value) || 0,
+                        coin5: parseInt(document.getElementById('coin5').value) || 0,
+                        coin1: parseInt(document.getElementById('coin1').value) || 0,
+                        total: parseInt(document.getElementById('currencyTotal').textContent) || 0
+                    },
+                    totalBalance: parseInt(document.getElementById('totalBalance').textContent) || 0,
+                    balanceCheck: {
+                        physicalBalance: parseInt(document.getElementById('totalBalance').textContent) || 0,
+                        calculatedBalance: parseInt(document.getElementById('finalBalance').textContent) || 0,
+                        difference: (parseInt(document.getElementById('totalBalance').textContent) || 0) - (parseInt(document.getElementById('finalBalance').textContent) || 0),
+                        isMatched: ((parseInt(document.getElementById('totalBalance').textContent) || 0) - (parseInt(document.getElementById('finalBalance').textContent) || 0)) === 0
+                    }
+                };
+
+                formData.append('metadata', JSON.stringify(data));
+
+                logDebug(`LINEとNotionに送信するデータ準備完了`);
+                showMessage('LINEとNotionに送信中...');
+
+                // APIに送信
+                const response = await fetch('/api/line-send', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                logDebug(`レスポンス: ${response.status} - ${JSON.stringify(result)}`);
+
+                if (!response.ok) {
+                    throw new Error(result.message || result.error || `HTTP ${response.status}`);
+                }
+
+                if (result.success) {
+                    let message = [];
+                    if (result.lineSuccess) {
+                        message.push(`LINE: ${result.lineSentCount}件送信成功`);
+                    }
+                    if (result.notionSuccess) {
+                        message.push('Notion: 保存成功');
+                    }
+                    showMessage(message.join(' / ') || 'PDFを送信しました！');
+                    logDebug('PDF送信成功');
+                } else {
+                    throw new Error(result.message || 'PDF送信に失敗しました');
+                }
+
+            } catch (error) {
+                console.error('LINE送信エラー:', error);
+                logDebug(`LINE送信エラー: ${error.message}`);
+                showMessage(`エラー: ${error.message}`);
             }
         }
 
