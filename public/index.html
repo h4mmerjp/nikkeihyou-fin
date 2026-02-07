@@ -454,9 +454,23 @@
         .btn-export {
             background-color: #cccccc;
         }
-        
+
         .btn-export:hover {
             background-color: #aaaaaa;
+        }
+
+        .btn-notion {
+            background-color: #e0ffe0;
+        }
+
+        .btn-notion:hover {
+            background-color: #b0ffb0;
+        }
+
+        .btn-notion:disabled {
+            background-color: #d0d0d0;
+            cursor: not-allowed;
+            opacity: 0.6;
         }
         
         .modal {
@@ -966,6 +980,7 @@
             <button class="btn btn-clear" onclick="clearAll()">全クリア</button>
             <button class="btn btn-print" onclick="printReport()">印刷</button>
             <button class="btn btn-export" onclick="exportData()">データエクスポート</button>
+            <button class="btn btn-notion" id="notionSaveBtn" onclick="saveToNotion()">Notionに保存</button>
         </div>
     </div>
 
@@ -1679,6 +1694,159 @@
                 console.error('エクスポート処理でエラー:', error);
                 logDebug(`エクスポートエラー: ${error.message}`);
                 showMessage('エクスポート処理中にエラーが発生しました。');
+            }
+        }
+
+        // Notion保存
+        async function saveToNotion() {
+            const btn = document.getElementById('notionSaveBtn');
+            btn.disabled = true;
+            btn.textContent = '保存中...';
+            logDebug('Notion保存開始');
+
+            try {
+                // exportDataと同じデータ構造を構築
+                const reportDate = document.getElementById('reportDate').value;
+                if (!reportDate) {
+                    throw new Error('日付を入力してください');
+                }
+
+                const date = new Date(reportDate + 'T00:00:00');
+                const dateDisplay = `(${date.toLocaleDateString('ja-JP', {
+                    year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'
+                })})`;
+
+                const data = {
+                    date: reportDate,
+                    dateDisplay: dateDisplay,
+                    income: {
+                        previousDifference: {
+                            sign: previousDifferenceSign,
+                            amount: parseInt(document.getElementById('previousDifference').value) || 0,
+                        },
+                        todayDifference: {
+                            sign: todayDifferenceSign,
+                            amount: parseInt(document.getElementById('todayDifference').value) || 0,
+                        },
+                        shaho: {
+                            count: parseInt(document.getElementById('shahoCount').value) || 0,
+                            amount: parseInt(document.getElementById('shahoIncome').value) || 0,
+                        },
+                        kokuho: {
+                            count: parseInt(document.getElementById('kokuhoCount').value) || 0,
+                            amount: parseInt(document.getElementById('kokuhoIncome').value) || 0,
+                        },
+                        kouki: {
+                            count: parseInt(document.getElementById('koukiCount').value) || 0,
+                            amount: parseInt(document.getElementById('koukiIncome').value) || 0,
+                        },
+                        jihi: {
+                            count: parseInt(document.getElementById('jihiCount').value) || 0,
+                            amount: parseInt(document.getElementById('jihiIncome').value) || 0,
+                        },
+                        hokenNashi: {
+                            count: parseInt(document.getElementById('hokenNashiCount').value) || 0,
+                            amount: parseInt(document.getElementById('hokenNashiIncome').value) || 0,
+                        },
+                        bushan: {
+                            note: document.getElementById('bushanNote').value || '',
+                            amount: parseInt(document.getElementById('bushanIncome').value) || 0,
+                        },
+                        extra1: {
+                            subject: document.getElementById('extraIncome1Subject').value || '',
+                            destination: document.getElementById('extraIncome1Destination').value || '',
+                            note: document.getElementById('extraIncome1Note').value || '',
+                            amount: parseInt(document.getElementById('extraIncome1Amount').value) || 0,
+                        },
+                        extra2: {
+                            subject: document.getElementById('extraIncome2Subject').value || '',
+                            destination: document.getElementById('extraIncome2Destination').value || '',
+                            note: document.getElementById('extraIncome2Note').value || '',
+                            amount: parseInt(document.getElementById('extraIncome2Amount').value) || 0,
+                        },
+                        total: parseInt(document.getElementById('incomeTotal').textContent) || 0,
+                    },
+                    expense: {
+                        expense1: {
+                            subject: document.getElementById('expense1Subject').value || '',
+                            destination: document.getElementById('expense1Destination').value || '',
+                            note: document.getElementById('expense1Note').value || '',
+                            amount: parseInt(document.getElementById('expense1').value) || 0,
+                        },
+                        expense2: {
+                            subject: document.getElementById('expense2Subject').value || '',
+                            destination: document.getElementById('expense2Destination').value || '',
+                            note: document.getElementById('expense2Note').value || '',
+                            amount: parseInt(document.getElementById('expense2').value) || 0,
+                        },
+                        expense3: {
+                            subject: document.getElementById('expense3Subject').value || '',
+                            destination: document.getElementById('expense3Destination').value || '',
+                            note: document.getElementById('expense3Note').value || '',
+                            amount: parseInt(document.getElementById('expense3').value) || 0,
+                        },
+                        director: parseInt(document.getElementById('expenseDirector').value) || 0,
+                        total: parseInt(document.getElementById('expenseTotal').textContent) || 0,
+                    },
+                    balance: {
+                        previous: parseInt(document.getElementById('previousBalance').value) || 0,
+                        final: parseInt(document.getElementById('finalBalance').textContent) || 0,
+                    },
+                    stock: {
+                        stock500: parseInt(document.getElementById('stock500').value) || 0,
+                        stock100: parseInt(document.getElementById('stock100').value) || 0,
+                        stock50: parseInt(document.getElementById('stock50').value) || 0,
+                        stock10: parseInt(document.getElementById('stock10').value) || 0,
+                        stock5: parseInt(document.getElementById('stock5').value) || 0,
+                        stock1: parseInt(document.getElementById('stock1').value) || 0,
+                        total: parseInt(document.getElementById('stockGrandTotal').textContent) || 0,
+                    },
+                    currency: {
+                        bill10000: parseInt(document.getElementById('bill10000').value) || 0,
+                        bill5000: parseInt(document.getElementById('bill5000').value) || 0,
+                        bill2000: parseInt(document.getElementById('bill2000').value) || 0,
+                        bill1000: parseInt(document.getElementById('bill1000').value) || 0,
+                        coin500: parseInt(document.getElementById('coin500').value) || 0,
+                        coin100: parseInt(document.getElementById('coin100').value) || 0,
+                        coin50: parseInt(document.getElementById('coin50').value) || 0,
+                        coin10: parseInt(document.getElementById('coin10').value) || 0,
+                        coin5: parseInt(document.getElementById('coin5').value) || 0,
+                        coin1: parseInt(document.getElementById('coin1').value) || 0,
+                        total: parseInt(document.getElementById('currencyTotal').textContent) || 0,
+                    },
+                    totalBalance: parseInt(document.getElementById('totalBalance').textContent) || 0,
+                    balanceCheck: {
+                        physicalBalance: parseInt(document.getElementById('totalBalance').textContent) || 0,
+                        calculatedBalance: parseInt(document.getElementById('finalBalance').textContent) || 0,
+                        difference: (parseInt(document.getElementById('totalBalance').textContent) || 0) - (parseInt(document.getElementById('finalBalance').textContent) || 0),
+                        isMatched: ((parseInt(document.getElementById('totalBalance').textContent) || 0) - (parseInt(document.getElementById('finalBalance').textContent) || 0)) === 0,
+                    },
+                };
+
+                logDebug('Notion APIに送信中...');
+
+                const response = await fetch('/api/notion-save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data),
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || `HTTP ${response.status}`);
+                }
+
+                logDebug(`Notion保存成功: ${result.pageUrl}`);
+                showMessage('Notionに保存しました！');
+
+            } catch (error) {
+                console.error('Notion save error:', error);
+                logDebug(`Notion保存エラー: ${error.message}`);
+                showMessage(`Notion保存エラー: ${error.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Notionに保存';
             }
         }
 
